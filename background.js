@@ -160,8 +160,8 @@ async function closeOverlay() {
 async function activateSelectedTab() {
   if (!navSession) return null;
 
-  await showOverlay();
   scheduleCommitTimer();
+  await showOverlay();
 
   return navSession.orderedTabIds[navSession.selectedIndex] ?? null;
 }
@@ -276,6 +276,17 @@ async function seedMru() {
   await setMru(merged);
 }
 
+async function warmContentScripts() {
+  const tabs = await chrome.tabs.query({});
+
+  await Promise.all(
+    tabs
+      .map((tab) => tab.id)
+      .filter((tabId) => typeof tabId === 'number')
+      .map((tabId) => ensureOverlayInjected(tabId).catch(() => false))
+  );
+}
+
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   pushMru(tabId).catch(() => {});
 });
@@ -310,10 +321,12 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 
 chrome.runtime.onInstalled.addListener(() => {
   seedMru().catch(() => {});
+  warmContentScripts().catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(() => {
   seedMru().catch(() => {});
+  warmContentScripts().catch(() => {});
 });
 
 chrome.commands.onCommand.addListener((command) => {
