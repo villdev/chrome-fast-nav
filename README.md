@@ -51,7 +51,7 @@ If you keep holding `Option`, each additional `Tab` press moves deeper through t
 1. Open Chrome and go to `chrome://extensions`
 2. Enable `Developer mode`
 3. Click `Load unpacked`
-4. Select this folder: `chrome-fast-nav-ext`
+4. Select this folder: `chrome-fast-nav`
 5. Reload the extension after local code changes
 
 ## Changing Shortcuts
@@ -79,7 +79,7 @@ The overlay will not appear on restricted Chrome pages such as `chrome://` pages
 ## Project Structure
 
 ```text
-chrome-fast-nav-ext/
+chrome-fast-nav/
 ├── manifest.json
 ├── background.js
 ├── content.js
