@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "Fast Nav",
+  "version": "1.0",
+  "description": "Arc-style MRU tab switching and navbar toggle for Chrome",
+  "permissions": ["tabs", "windows", "storage", "scripting"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_end"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "commands": {
+    "mru-next": {
+      "suggested_key": {
+        "mac": "Alt+Tab"
+      },
+      "description": "Switch to next MRU tab (Arc-style)"
+    },
+    "mru-prev": {
+      "suggested_key": {
+        "mac": "Alt+Shift+Tab"
+      },
+      "description": "Switch to previous MRU tab"
+    },
+    "toggle-navbar": {
+      "suggested_key": {
+        "mac": "Alt+S"
+      },
+      "description": "Toggle Chrome UI visibility (fullscreen toggle)"
+    }
+  }
+}
