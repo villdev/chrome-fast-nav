@@ -11,5 +11,5 @@
     "target": "ES2022",
     "types": ["chrome"]
   },
-  "include": ["background.js", "content.js"]
+  "include": ["src/background.js", "src/content.js", "src/core/*.js"]
 }

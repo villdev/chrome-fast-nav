@@ -1,5 +1,17 @@
+import {
+  MAX_MRU_SIZE,
+  pushTabIdToMru,
+  removeTabIdFromMru,
+  seedMruStack,
+} from './core/mru-store.js';
+import {
+  didModifierReleaseRace as didModifierReleaseRaceForState,
+  getNextSelectionIndex,
+  getSessionTabRemovalUpdate,
+} from './core/nav-session.js';
+import { buildOrderedTabIds, buildOverlayTabs, getActiveTab } from './core/tab-ordering.js';
+
 const MRU_KEY = 'mruStack';
-const MAX_MRU_SIZE = 200;
 const NAV_COMMIT_DELAY_MS = 900;
 const MODIFIER_RELEASE_GRACE_MS = 750;
 const SHOW_OVERLAY_RETRY_MS = 80;
@@ -29,7 +41,7 @@ async function pushMru(tabId) {
   if (suppressMruUpdate || typeof tabId !== 'number') return;
 
   const stack = await getMru();
-  await setMru([tabId, ...stack.filter((id) => id !== tabId)]);
+  await setMru(pushTabIdToMru(stack, tabId));
 }
 
 function sleep(ms) {
@@ -52,7 +64,7 @@ async function ensureOverlayInjected(tabId) {
   try {
     await chrome.scripting.executeScript({
       target: { tabId },
-      files: ['content.js'],
+      files: ['src/content.js'],
     });
     return true;
   } catch {
@@ -107,123 +119,16 @@ async function getFocusedWindowId() {
 
 async function getWindowState(windowId) {
   const tabs = await chrome.tabs.query({ windowId });
-  const activeTab = tabs.find((tab) => tab.active);
+  const activeTab = getActiveTab(tabs);
 
-  if (typeof activeTab?.id !== 'number') {
+  if (!activeTab) {
     return { tabs, activeTab: null, orderedTabIds: [] };
   }
 
   const mru = await getMru();
-  const tabMap = new Map(tabs.map((tab) => [tab.id, tab]));
-  const orderedTabIds = [];
-  const seen = new Set();
-
-  orderedTabIds.push(activeTab.id);
-  seen.add(activeTab.id);
-
-  for (const tabId of mru) {
-    if (!tabMap.has(tabId) || seen.has(tabId)) continue;
-    orderedTabIds.push(tabId);
-    seen.add(tabId);
-  }
-
-  for (let i = tabs.length - 1; i >= 0; i -= 1) {
-    const tab = tabs[i];
-    if (!seen.has(tab.id)) {
-      orderedTabIds.push(tab.id);
-      seen.add(tab.id);
-    }
-  }
+  const orderedTabIds = buildOrderedTabIds(tabs, mru);
 
   return { tabs, activeTab, orderedTabIds };
-}
-
-function parseIPv4Address(hostname) {
-  const parts = hostname.split('.');
-  if (parts.length !== 4) return null;
-
-  const bytes = parts.map((part) => {
-    if (!/^\d+$/.test(part)) return null;
-    const value = Number(part);
-    return value >= 0 && value <= 255 ? value : null;
-  });
-
-  return bytes.every((byte) => byte !== null) ? bytes : null;
-}
-
-function isPrivateIPv4(bytes) {
-  const [a, b] = bytes;
-
-  return (
-    a === 0 ||
-    a === 10 ||
-    a === 127 ||
-    (a === 100 && b >= 64 && b <= 127) ||
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    (a === 198 && (b === 18 || b === 19))
-  );
-}
-
-function isLocalOrPrivateHostname(hostname) {
-  const host = hostname
-    .toLowerCase()
-    .replace(/^\[|\]$/g, '')
-    .replace(/\.$/, '');
-  if (!host) return true;
-
-  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) {
-    return true;
-  }
-
-  const ipv4 = parseIPv4Address(host);
-  if (ipv4) {
-    return isPrivateIPv4(ipv4);
-  }
-
-  if (host.includes(':')) {
-    if (host === '::1' || host === '0:0:0:0:0:0:0:1') return true;
-
-    const firstHextet = Number.parseInt(host.split(':')[0], 16);
-    if (Number.isFinite(firstHextet)) {
-      return (firstHextet & 0xfe00) === 0xfc00 || (firstHextet & 0xffc0) === 0xfe80;
-    }
-  }
-
-  return !host.includes('.');
-}
-
-function getSafeFaviconUrl(favIconUrl) {
-  if (typeof favIconUrl !== 'string' || !favIconUrl) return '';
-
-  try {
-    const url = new URL(favIconUrl);
-
-    if (url.protocol === 'data:') {
-      return url.href.toLowerCase().startsWith('data:image/') ? favIconUrl : '';
-    }
-
-    if (url.protocol !== 'https:') {
-      return '';
-    }
-
-    return isLocalOrPrivateHostname(url.hostname) ? '' : favIconUrl;
-  } catch {
-    return '';
-  }
-}
-
-function buildOverlayTabs(orderedTabIds, tabMap) {
-  return orderedTabIds
-    .map((tabId) => tabMap.get(tabId))
-    .filter(Boolean)
-    .map((tab) => ({
-      id: tab.id,
-      title: tab.title || tab.url || 'Untitled',
-      url: tab.url || '',
-      favIconUrl: getSafeFaviconUrl(tab.favIconUrl),
-    }));
 }
 
 async function showOverlay(session = navSession) {
@@ -291,10 +196,11 @@ async function activateSelectedTab() {
 }
 
 function didModifierReleaseRace(commandStartedAt, pressId) {
-  return (
-    modifierState.lastUpPressId === pressId &&
-    modifierState.lastUpAt >= commandStartedAt - MODIFIER_RELEASE_GRACE_MS &&
-    modifierState.lastUpAt >= modifierState.lastDownAt
+  return didModifierReleaseRaceForState(
+    modifierState,
+    commandStartedAt,
+    pressId,
+    MODIFIER_RELEASE_GRACE_MS,
   );
 }
 
@@ -339,11 +245,11 @@ async function startNavSession(windowId, direction, commandStartedAt) {
 function moveSelection(direction) {
   if (!navSession) return;
 
-  const len = navSession.orderedTabIds.length;
-  if (len < 2) return;
-
-  const delta = direction < 0 ? -1 : 1;
-  navSession.selectedIndex = (navSession.selectedIndex + delta + len) % len;
+  navSession.selectedIndex = getNextSelectionIndex(
+    navSession.selectedIndex,
+    direction,
+    navSession.orderedTabIds.length,
+  );
 }
 
 async function handleMruNav(direction, commandTab) {
@@ -405,18 +311,7 @@ async function handleNavbarToggle(commandTab) {
 async function seedMru() {
   const tabs = await chrome.tabs.query({});
   const current = await getMru();
-  const merged = [...current];
-  const seen = new Set(current);
-
-  for (let i = tabs.length - 1; i >= 0; i -= 1) {
-    const tab = tabs[i];
-    if (!seen.has(tab.id)) {
-      merged.push(tab.id);
-      seen.add(tab.id);
-    }
-  }
-
-  await setMru(merged);
+  await setMru(seedMruStack(current, tabs));
 }
 
 async function warmContentScripts() {
@@ -440,27 +335,24 @@ chrome.tabs.onCreated.addListener(({ id }) => {
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const stack = await getMru();
-  await setMru(stack.filter((id) => id !== tabId));
+  await setMru(removeTabIdFromMru(stack, tabId));
 
   if (!navSession) return;
 
   const session = navSession;
   if (session.isFinalizing) return;
 
-  session.orderedTabIds = session.orderedTabIds.filter((id) => id !== tabId);
+  const update = getSessionTabRemovalUpdate(session, tabId);
+  session.orderedTabIds = update.orderedTabIds;
+  session.originTabId = update.originTabId;
+  session.selectedIndex = update.selectedIndex;
 
-  if (!session.orderedTabIds.length || session.orderedTabIds.length === 1) {
+  if (update.action === 'commit') {
     await commitNav();
     return;
   }
 
-  if (session.originTabId === tabId) {
-    session.originTabId = session.orderedTabIds[0];
-  }
-
-  session.selectedIndex = Math.min(session.selectedIndex, session.orderedTabIds.length - 1);
-
-  if (session.overlayTabId === tabId) {
+  if (update.action === 'cancel') {
     await cancelNav();
     return;
   }
