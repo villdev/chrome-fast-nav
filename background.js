@@ -1,14 +1,19 @@
 const MRU_KEY = 'mruStack';
 const MAX_MRU_SIZE = 200;
 const NAV_COMMIT_DELAY_MS = 900;
+const MODIFIER_RELEASE_GRACE_MS = 750;
 const SHOW_OVERLAY_RETRY_MS = 80;
 const SHOW_OVERLAY_MAX_ATTEMPTS = 6;
 
 let suppressMruUpdate = false;
 let navSession = null;
+let nextSessionId = 1;
 const modifierState = {
   alt: false,
   pressId: 0,
+  lastDownAt: 0,
+  lastUpAt: 0,
+  lastUpPressId: null,
 };
 
 async function getMru() {
@@ -79,25 +84,41 @@ async function sendMessageWithRetry(tabId, message, attempts = SHOW_OVERLAY_MAX_
   return false;
 }
 
-function clearCommitTimer() {
-  if (!navSession?.commitTimer) return;
-  clearTimeout(navSession.commitTimer);
-  navSession.commitTimer = null;
+function clearCommitTimer(session = navSession) {
+  if (!session?.commitTimer) return;
+  clearTimeout(session.commitTimer);
+  session.commitTimer = null;
 }
 
-function scheduleCommitTimer() {
-  clearCommitTimer();
-  if (!navSession) return;
-  navSession.commitTimer = setTimeout(() => {
-    commitNav().catch(() => {});
+function scheduleCommitTimer(session = navSession) {
+  clearCommitTimer(session);
+  if (!session || navSession !== session) return;
+
+  session.commitTimer = setTimeout(() => {
+    if (navSession === session) {
+      commitNav().catch(() => {});
+    }
   }, NAV_COMMIT_DELAY_MS);
+}
+
+function getCommandWindowId(commandTab) {
+  if (typeof commandTab?.windowId === 'number') {
+    return commandTab.windowId;
+  }
+
+  return null;
+}
+
+async function getFocusedWindowId() {
+  const focusedWindow = await chrome.windows.getLastFocused();
+  return focusedWindow.id;
 }
 
 async function getWindowState(windowId) {
   const tabs = await chrome.tabs.query({ windowId });
   const activeTab = tabs.find((tab) => tab.active);
 
-  if (!activeTab?.id) {
+  if (typeof activeTab?.id !== 'number') {
     return { tabs, activeTab: null, orderedTabIds: [] };
   }
 
@@ -125,6 +146,79 @@ async function getWindowState(windowId) {
   return { tabs, activeTab, orderedTabIds };
 }
 
+function parseIPv4Address(hostname) {
+  const parts = hostname.split('.');
+  if (parts.length !== 4) return null;
+
+  const bytes = parts.map((part) => {
+    if (!/^\d+$/.test(part)) return null;
+    const value = Number(part);
+    return value >= 0 && value <= 255 ? value : null;
+  });
+
+  return bytes.every((byte) => byte !== null) ? bytes : null;
+}
+
+function isPrivateIPv4(bytes) {
+  const [a, b] = bytes;
+
+  return (
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 198 && (b === 18 || b === 19))
+  );
+}
+
+function isLocalOrPrivateHostname(hostname) {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  if (!host) return true;
+
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) {
+    return true;
+  }
+
+  const ipv4 = parseIPv4Address(host);
+  if (ipv4) {
+    return isPrivateIPv4(ipv4);
+  }
+
+  if (host.includes(':')) {
+    if (host === '::1' || host === '0:0:0:0:0:0:0:1') return true;
+
+    const firstHextet = Number.parseInt(host.split(':')[0], 16);
+    if (Number.isFinite(firstHextet)) {
+      return (firstHextet & 0xfe00) === 0xfc00 || (firstHextet & 0xffc0) === 0xfe80;
+    }
+  }
+
+  return !host.includes('.');
+}
+
+function getSafeFaviconUrl(favIconUrl) {
+  if (typeof favIconUrl !== 'string' || !favIconUrl) return '';
+
+  try {
+    const url = new URL(favIconUrl);
+
+    if (url.protocol === 'data:') {
+      return url.href.toLowerCase().startsWith('data:image/') ? favIconUrl : '';
+    }
+
+    if (url.protocol !== 'https:') {
+      return '';
+    }
+
+    return isLocalOrPrivateHostname(url.hostname) ? '' : favIconUrl;
+  } catch (_) {
+    return '';
+  }
+}
+
 function buildOverlayTabs(orderedTabIds, tabMap) {
   return orderedTabIds
     .map((tabId) => tabMap.get(tabId))
@@ -133,58 +227,88 @@ function buildOverlayTabs(orderedTabIds, tabMap) {
       id: tab.id,
       title: tab.title || tab.url || 'Untitled',
       url: tab.url || '',
-      favIconUrl: tab.favIconUrl || '',
+      favIconUrl: getSafeFaviconUrl(tab.favIconUrl),
     }));
 }
 
-async function showOverlay() {
-  if (!navSession) return;
+async function showOverlay(session = navSession) {
+  if (!session || navSession !== session) return;
 
-  const { orderedTabIds, selectedIndex, overlayTabId } = navSession;
-  const tabs = await chrome.tabs.query({ windowId: navSession.windowId });
+  const { orderedTabIds, overlayTabId } = session;
+  const tabs = await chrome.tabs.query({ windowId: session.windowId });
+  if (navSession !== session) return;
+
   const tabMap = new Map(tabs.map((tab) => [tab.id, tab]));
   const overlayTabs = buildOverlayTabs(orderedTabIds, tabMap);
+  const selectedIndex = Math.min(session.selectedIndex, Math.max(overlayTabs.length - 1, 0));
 
-  await sendMessageWithRetry(overlayTabId, {
+  return sendMessageWithRetry(overlayTabId, {
     action: 'showSwitcher',
+    sessionId: session.id,
     tabs: overlayTabs,
     selectedIndex,
   });
 }
 
-async function closeOverlay() {
-  if (!navSession?.overlayTabId) return;
-  await safeSendMessage(navSession.overlayTabId, { action: 'closeSwitcher' });
+async function closeOverlay(session = navSession) {
+  if (!session?.overlayTabId) return;
+  await safeSendMessage(session.overlayTabId, {
+    action: 'closeSwitcher',
+    sessionId: session.id,
+  });
 }
 
 async function activateSelectedTab() {
-  if (!navSession) return null;
+  const session = navSession;
+  if (!session) return null;
 
-  scheduleCommitTimer();
-  await showOverlay();
+  scheduleCommitTimer(session);
+  const overlayShown = await showOverlay(session);
 
-  return navSession.orderedTabIds[navSession.selectedIndex] ?? null;
+  if (navSession !== session) return null;
+  if (overlayShown) {
+    clearCommitTimer(session);
+  }
+
+  return session.orderedTabIds[session.selectedIndex] ?? null;
 }
 
-async function startNavSession(direction) {
-  const currentWindow = await chrome.windows.getCurrent();
-  const { activeTab, orderedTabIds } = await getWindowState(currentWindow.id);
+function didModifierReleaseRace(commandStartedAt, pressId) {
+  return (
+    modifierState.lastUpPressId === pressId &&
+    modifierState.lastUpAt >= commandStartedAt - MODIFIER_RELEASE_GRACE_MS &&
+    modifierState.lastUpAt >= modifierState.lastDownAt
+  );
+}
 
-  if (!activeTab?.id || orderedTabIds.length < 2) return;
+async function startNavSession(windowId, direction, commandStartedAt) {
+  const { activeTab, orderedTabIds } = await getWindowState(windowId);
+
+  if (typeof activeTab?.id !== 'number' || orderedTabIds.length < 2) return;
+
+  const pressId = modifierState.pressId;
 
   navSession = {
-    windowId: currentWindow.id,
+    id: nextSessionId,
+    windowId,
     originTabId: activeTab.id,
     orderedTabIds,
     selectedIndex: 0,
     overlayTabId: activeTab.id,
     commitTimer: null,
-    pressId: modifierState.pressId,
+    pressId,
+    isFinalizing: false,
   };
+  nextSessionId += 1;
 
+  const session = navSession;
   suppressMruUpdate = true;
   moveSelection(direction);
   await activateSelectedTab();
+
+  if (navSession === session && didModifierReleaseRace(commandStartedAt, pressId)) {
+    await commitNav();
+  }
 }
 
 function moveSelection(direction) {
@@ -205,22 +329,33 @@ function moveSelection(direction) {
   navSession.selectedIndex = nextIndex;
 }
 
-async function handleMruNav(direction) {
-  const currentWindow = await chrome.windows.getCurrent();
-  const shouldContinueSession =
-    navSession &&
-    navSession.windowId === currentWindow.id &&
-    modifierState.alt &&
-    navSession.pressId === modifierState.pressId;
+async function handleMruNav(direction, commandTab) {
+  const commandStartedAt = Date.now();
+  let windowId = getCommandWindowId(commandTab);
+
+  if (windowId === null && navSession && !navSession.isFinalizing) {
+    windowId = navSession.windowId;
+  }
+
+  if (windowId === null) {
+    windowId = await getFocusedWindowId();
+  }
+
+  if (navSession?.isFinalizing) return;
+
+  const shouldContinueSession = navSession && navSession.windowId === windowId;
 
   if (!shouldContinueSession) {
     if (navSession) {
-      clearCommitTimer();
-      await closeOverlay();
-      navSession = null;
-      suppressMruUpdate = false;
+      const previousSession = navSession;
+      clearCommitTimer(previousSession);
+      await closeOverlay(previousSession);
+      if (navSession === previousSession) {
+        navSession = null;
+        suppressMruUpdate = false;
+      }
     }
-    await startNavSession(direction);
+    await startNavSession(windowId, direction, commandStartedAt);
     return;
   }
 
@@ -229,12 +364,15 @@ async function handleMruNav(direction) {
 }
 
 async function commitNav() {
-  if (!navSession) return;
+  const session = navSession;
+  if (!session) return;
 
-  const finalTabId = navSession.orderedTabIds[navSession.selectedIndex];
-  clearCommitTimer();
-  await closeOverlay();
+  const finalTabId = session.orderedTabIds[session.selectedIndex];
+  session.isFinalizing = true;
+  clearCommitTimer(session);
+  await closeOverlay(session);
 
+  if (navSession !== session) return;
   navSession = null;
   suppressMruUpdate = false;
 
@@ -245,17 +383,21 @@ async function commitNav() {
 }
 
 async function cancelNav() {
-  if (!navSession) return;
+  const session = navSession;
+  if (!session) return;
 
-  clearCommitTimer();
-  await closeOverlay();
+  session.isFinalizing = true;
+  clearCommitTimer(session);
+  await closeOverlay(session);
 
+  if (navSession !== session) return;
   navSession = null;
   suppressMruUpdate = false;
 }
 
-async function handleNavbarToggle() {
-  const win = await chrome.windows.getCurrent();
+async function handleNavbarToggle(commandTab) {
+  const windowId = getCommandWindowId(commandTab) ?? (await getFocusedWindowId());
+  const win = await chrome.windows.get(windowId);
   const newState = win.state === 'fullscreen' ? 'normal' : 'fullscreen';
   await chrome.windows.update(win.id, { state: newState });
 }
@@ -297,26 +439,29 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 
   if (!navSession) return;
 
-  navSession.orderedTabIds = navSession.orderedTabIds.filter((id) => id !== tabId);
+  const session = navSession;
+  if (session.isFinalizing) return;
 
-  if (!navSession.orderedTabIds.length || navSession.orderedTabIds.length === 1) {
+  session.orderedTabIds = session.orderedTabIds.filter((id) => id !== tabId);
+
+  if (!session.orderedTabIds.length || session.orderedTabIds.length === 1) {
     await commitNav();
     return;
   }
 
-  if (navSession.originTabId === tabId) {
-    navSession.originTabId = navSession.orderedTabIds[0];
+  if (session.originTabId === tabId) {
+    session.originTabId = session.orderedTabIds[0];
   }
 
-  const nextIndex = Math.min(navSession.selectedIndex, navSession.orderedTabIds.length - 1);
-  navSession.selectedIndex = Math.max(1, nextIndex);
+  const nextIndex = Math.min(session.selectedIndex, session.orderedTabIds.length - 1);
+  session.selectedIndex = Math.max(1, nextIndex);
 
-  if (navSession.overlayTabId === tabId) {
+  if (session.overlayTabId === tabId) {
     await cancelNav();
     return;
   }
 
-  await showOverlay();
+  await showOverlay(session);
 });
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -329,41 +474,66 @@ chrome.runtime.onStartup.addListener(() => {
   warmContentScripts().catch(() => {});
 });
 
-chrome.commands.onCommand.addListener((command) => {
+chrome.commands.onCommand.addListener((command, tab) => {
   if (command === 'mru-next') {
-    handleMruNav(1).catch(() => {});
+    handleMruNav(1, tab).catch(() => {});
     return;
   }
 
   if (command === 'mru-prev') {
-    handleMruNav(-1).catch(() => {});
+    handleMruNav(-1, tab).catch(() => {});
     return;
   }
 
   if (command === 'toggle-navbar') {
-    handleNavbarToggle().catch(() => {});
+    handleNavbarToggle(tab).catch(() => {});
   }
 });
 
-chrome.runtime.onMessage.addListener((msg) => {
+function isSessionMessage(msg) {
+  return Number.isInteger(msg.sessionId);
+}
+
+function doesMessageMatchSession(msg) {
+  return !isSessionMessage(msg) || (navSession && msg.sessionId === navSession.id);
+}
+
+function isModifierEventForSession(sender) {
+  return !navSession || sender?.tab?.windowId === navSession.windowId;
+}
+
+chrome.runtime.onMessage.addListener((msg, sender) => {
   if (msg.action === 'commitNav') {
-    commitNav().catch(() => {});
+    if (doesMessageMatchSession(msg)) {
+      commitNav().catch(() => {});
+    }
   } else if (msg.action === 'cancelNav') {
-    cancelNav().catch(() => {});
+    if (doesMessageMatchSession(msg)) {
+      cancelNav().catch(() => {});
+    }
   } else if (msg.action === 'modifierChange' && msg.key === 'Alt') {
+    const timestamp = Date.now();
     if (msg.isDown) {
       modifierState.pressId += 1;
       modifierState.alt = true;
+      modifierState.lastDownAt = timestamp;
     } else {
       modifierState.alt = false;
-      if (navSession) {
+      modifierState.lastUpAt = timestamp;
+      modifierState.lastUpPressId = modifierState.pressId;
+
+      if (navSession && isModifierEventForSession(sender)) {
         commitNav().catch(() => {});
       }
     }
   } else if (msg.action === 'switchToTab' && typeof msg.tabId === 'number') {
+    if (!doesMessageMatchSession(msg)) {
+      return false;
+    }
+
     if (navSession) {
       const index = navSession.orderedTabIds.indexOf(msg.tabId);
-      if (index > 0) {
+      if (index >= 0) {
         navSession.selectedIndex = index;
       }
     }

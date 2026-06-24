@@ -6,6 +6,9 @@ if (!window.__fastNavInitialized) {
   let overlayRoot = null;
   let listEl = null;
   let selectedIndex = 0;
+  let activeSessionId = null;
+  let renderedTabIds = [];
+  let altIsDown = false;
 
   const overlayStyles = `
     :host {
@@ -163,15 +166,28 @@ if (!window.__fastNavInitialized) {
     }
   `;
 
+  function sendAltState(isDown) {
+    chrome.runtime
+      .sendMessage({
+        action: 'modifierChange',
+        key: 'Alt',
+        isDown,
+      })
+      .catch(() => {});
+  }
+
+  function releaseAltIfNeeded() {
+    if (!altIsDown) return;
+    altIsDown = false;
+    sendAltState(false);
+  }
+
   document.addEventListener(
     'keydown',
     (event) => {
-      if (event.key === 'Alt' && !event.repeat) {
-        chrome.runtime.sendMessage({
-          action: 'modifierChange',
-          key: 'Alt',
-          isDown: true,
-        }).catch(() => {});
+      if (event.key === 'Alt' && !event.repeat && !altIsDown) {
+        altIsDown = true;
+        sendAltState(true);
       }
     },
     true
@@ -181,15 +197,19 @@ if (!window.__fastNavInitialized) {
     'keyup',
     (event) => {
       if (event.key === 'Alt') {
-        chrome.runtime.sendMessage({
-          action: 'modifierChange',
-          key: 'Alt',
-          isDown: false,
-        }).catch(() => {});
+        altIsDown = false;
+        sendAltState(false);
       }
     },
     true
   );
+
+  window.addEventListener('blur', releaseAltIfNeeded, true);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      releaseAltIfNeeded();
+    }
+  });
 
   function getHostname(url) {
     try {
@@ -199,9 +219,25 @@ if (!window.__fastNavInitialized) {
     }
   }
 
-  function buildOverlay(tabs, nextSelectedIndex) {
+  function getMessageSessionId(msg) {
+    return Number.isInteger(msg.sessionId) ? msg.sessionId : null;
+  }
+
+  function normalizeSelectedIndex(nextSelectedIndex, itemCount) {
+    if (!Number.isInteger(nextSelectedIndex) || nextSelectedIndex < 0) return 0;
+    return Math.min(nextSelectedIndex, Math.max(itemCount - 1, 0));
+  }
+
+  function haveRenderedTabsChanged(tabs) {
+    if (tabs.length !== renderedTabIds.length) return true;
+    return tabs.some((tab, index) => tab.id !== renderedTabIds[index]);
+  }
+
+  function buildOverlay(tabs, nextSelectedIndex, sessionId) {
     destroyOverlay();
-    selectedIndex = nextSelectedIndex;
+    selectedIndex = normalizeSelectedIndex(nextSelectedIndex, tabs.length);
+    activeSessionId = sessionId;
+    renderedTabIds = tabs.map((tab) => tab.id);
 
     overlayHost = document.createElement('div');
     overlayHost.id = 'fast-nav-switcher-host';
@@ -242,8 +278,12 @@ if (!window.__fastNavInitialized) {
 
       const icon = document.createElement('img');
       icon.className = 'fast-nav-favicon';
-      icon.src = tab.favIconUrl || '';
       icon.alt = '';
+      if (tab.favIconUrl) {
+        icon.src = tab.favIconUrl;
+      } else {
+        icon.style.visibility = 'hidden';
+      }
       icon.onerror = () => {
         icon.style.visibility = 'hidden';
       };
@@ -268,7 +308,11 @@ if (!window.__fastNavInitialized) {
       item.addEventListener('mousedown', (event) => {
         event.preventDefault();
         chrome.runtime
-          .sendMessage({ action: 'switchToTab', tabId: tab.id })
+          .sendMessage({
+            action: 'switchToTab',
+            sessionId: activeSessionId,
+            tabId: tab.id,
+          })
           .catch(() => {});
       });
 
@@ -287,10 +331,14 @@ if (!window.__fastNavInitialized) {
     (document.body || document.documentElement).appendChild(overlayHost);
 
     document.addEventListener('keydown', onKeyDown, true);
-    syncSelection(nextSelectedIndex);
+    syncSelection(selectedIndex);
   }
 
-  function destroyOverlay() {
+  function destroyOverlay(sessionId = null) {
+    if (Number.isInteger(sessionId) && activeSessionId !== null && sessionId !== activeSessionId) {
+      return;
+    }
+
     if (!overlay) return;
 
     document.removeEventListener('keydown', onKeyDown, true);
@@ -300,17 +348,20 @@ if (!window.__fastNavInitialized) {
     overlayRoot = null;
     listEl = null;
     selectedIndex = 0;
+    activeSessionId = null;
+    renderedTabIds = [];
   }
 
   function syncSelection(nextSelectedIndex) {
     if (!listEl) return;
 
     const items = listEl.querySelectorAll('.fast-nav-item');
+    const safeSelectedIndex = normalizeSelectedIndex(nextSelectedIndex, items.length);
     items.forEach((item, index) => {
-      item.classList.toggle('fast-nav-selected', index === nextSelectedIndex);
+      item.classList.toggle('fast-nav-selected', index === safeSelectedIndex);
     });
 
-    selectedIndex = nextSelectedIndex;
+    selectedIndex = safeSelectedIndex;
     items[selectedIndex]?.scrollIntoView({ block: 'nearest' });
   }
 
@@ -320,14 +371,18 @@ if (!window.__fastNavInitialized) {
     if (event.key === 'Escape') {
       event.preventDefault();
       event.stopPropagation();
-      chrome.runtime.sendMessage({ action: 'cancelNav' }).catch(() => {});
+      chrome.runtime
+        .sendMessage({ action: 'cancelNav', sessionId: activeSessionId })
+        .catch(() => {});
       return;
     }
 
     if (event.key === 'Enter') {
       event.preventDefault();
       event.stopPropagation();
-      chrome.runtime.sendMessage({ action: 'commitNav' }).catch(() => {});
+      chrome.runtime
+        .sendMessage({ action: 'commitNav', sessionId: activeSessionId })
+        .catch(() => {});
     }
   }
 
@@ -335,14 +390,15 @@ if (!window.__fastNavInitialized) {
     if (msg.action === 'showSwitcher') {
       const tabs = Array.isArray(msg.tabs) ? msg.tabs : [];
       const nextSelectedIndex = Number.isInteger(msg.selectedIndex) ? msg.selectedIndex : 0;
+      const sessionId = getMessageSessionId(msg);
 
-      if (!overlay) {
-        buildOverlay(tabs, nextSelectedIndex);
+      if (!overlay || activeSessionId !== sessionId || haveRenderedTabsChanged(tabs)) {
+        buildOverlay(tabs, nextSelectedIndex, sessionId);
       } else {
         syncSelection(nextSelectedIndex);
       }
     } else if (msg.action === 'closeSwitcher') {
-      destroyOverlay();
+      destroyOverlay(getMessageSessionId(msg));
     }
   });
 }
