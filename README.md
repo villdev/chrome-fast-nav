@@ -27,7 +27,7 @@ This is the only browser UI toggle exposed to extensions. Chrome extensions cann
 
 ## How It Works
 
-Fast Nav keeps an MRU stack of tab ids. Every time a tab becomes active, it moves to the front of that stack.
+Fast Nav keeps an MRU stack of tab ids. Every time a tab becomes active or a new tab is created, it moves to the front of that stack.
 
 Example:
 

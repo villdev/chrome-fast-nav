@@ -427,6 +427,10 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
   pushMru(tabId).catch(() => {});
 });
 
+chrome.tabs.onCreated.addListener(({ id }) => {
+  pushMru(id).catch(() => {});
+});
+
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const stack = await getMru();
   await setMru(stack.filter((id) => id !== tabId));
