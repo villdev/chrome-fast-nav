@@ -321,7 +321,7 @@ if (!window.__fastNavInitialized) {
 
     const hint = document.createElement('div');
     hint.className = 'fast-nav-hint';
-    hint.textContent = 'Hold Option and tap Tab to move. Release Option to commit.';
+    hint.textContent = 'Hold Option. Tab/Down move next, Up moves back. Release Option to commit.';
 
     card.appendChild(header);
     card.appendChild(listEl);
@@ -373,6 +373,19 @@ if (!window.__fastNavInitialized) {
       event.stopPropagation();
       chrome.runtime
         .sendMessage({ action: 'cancelNav', sessionId: activeSessionId })
+        .catch(() => {});
+      return;
+    }
+
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      event.stopPropagation();
+      chrome.runtime
+        .sendMessage({
+          action: 'moveSelection',
+          sessionId: activeSessionId,
+          direction: event.key === 'ArrowDown' ? 1 : -1,
+        })
         .catch(() => {});
       return;
     }

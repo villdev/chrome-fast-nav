@@ -517,6 +517,13 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
         commitNav().catch(() => {});
       }
     }
+  } else if (msg.action === 'moveSelection' && Number.isFinite(msg.direction)) {
+    if (!doesMessageMatchSession(msg) || !navSession || navSession.isFinalizing) {
+      return false;
+    }
+
+    moveSelection(msg.direction);
+    activateSelectedTab().catch(() => {});
   } else if (msg.action === 'switchToTab' && typeof msg.tabId === 'number') {
     if (!doesMessageMatchSession(msg)) {
       return false;
