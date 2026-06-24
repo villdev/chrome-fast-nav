@@ -54,6 +54,31 @@ If you keep holding `Option`, each additional `Tab` press moves deeper through t
 4. Select this folder: `chrome-fast-nav`
 5. Reload the extension after local code changes
 
+## Development
+
+Install dependencies with pnpm:
+
+```sh
+pnpm install
+```
+
+Run the full local check before committing:
+
+```sh
+pnpm run check
+```
+
+Common commands:
+
+- `pnpm run lint` checks `background.js` and `content.js` with Oxlint.
+- `pnpm run format:check` checks formatting with Oxfmt.
+- `pnpm run typecheck` runs TypeScript checks against the plain JavaScript files.
+
+To update files automatically:
+
+- `pnpm run lint:fix` applies safe Oxlint fixes.
+- `pnpm run format` writes Oxfmt formatting changes.
+
 ## Changing Shortcuts
 
 Chrome reserves some browser shortcuts, including `Ctrl+Tab`, so extensions cannot bind them directly.
@@ -81,6 +106,8 @@ The overlay will not appear on restricted Chrome pages such as `chrome://` pages
 ```text
 chrome-fast-nav/
 ├── manifest.json
+├── package.json
+├── tsconfig.json
 ├── background.js
 ├── content.js
 └── icons/

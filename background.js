@@ -42,7 +42,7 @@ async function safeSendMessage(tabId, message) {
   try {
     await chrome.tabs.sendMessage(tabId, message);
     return true;
-  } catch (_) {
+  } catch {
     // Some pages cannot host content scripts (chrome://, extension pages, etc).
     return false;
   }
@@ -55,7 +55,7 @@ async function ensureOverlayInjected(tabId) {
       files: ['content.js'],
     });
     return true;
-  } catch (_) {
+  } catch {
     return false;
   }
 }
@@ -167,7 +167,10 @@ function isPrivateIPv4(bytes) {
 }
 
 function isLocalOrPrivateHostname(hostname) {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  const host = hostname
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.$/, '');
   if (!host) return true;
 
   if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) {
@@ -206,7 +209,7 @@ function getSafeFaviconUrl(favIconUrl) {
     }
 
     return isLocalOrPrivateHostname(url.hostname) ? '' : favIconUrl;
-  } catch (_) {
+  } catch {
     return '';
   }
 }
@@ -259,7 +262,7 @@ async function endNavSession(session = navSession) {
 
   try {
     await closeOverlay(session);
-  } catch (_) {
+  } catch {
     // Overlay teardown is best-effort; session state must still be restored.
   } finally {
     endedActiveSession = navSession === session;
@@ -423,7 +426,7 @@ async function warmContentScripts() {
     tabs
       .map((tab) => tab.id)
       .filter((tabId) => typeof tabId === 'number')
-      .map((tabId) => ensureOverlayInjected(tabId).catch(() => false))
+      .map((tabId) => ensureOverlayInjected(tabId).catch(() => false)),
   );
 }
 

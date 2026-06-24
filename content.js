@@ -1,5 +1,8 @@
-if (!window.__fastNavInitialized) {
-  window.__fastNavInitialized = true;
+/** @type {Window & { __fastNavInitialized?: boolean }} */
+const fastNavWindow = window;
+
+if (!fastNavWindow.__fastNavInitialized) {
+  fastNavWindow.__fastNavInitialized = true;
 
   let overlay = null;
   let overlayHost = null;
@@ -190,7 +193,7 @@ if (!window.__fastNavInitialized) {
         sendAltState(true);
       }
     },
-    true
+    true,
   );
 
   document.addEventListener(
@@ -201,7 +204,7 @@ if (!window.__fastNavInitialized) {
         sendAltState(false);
       }
     },
-    true
+    true,
   );
 
   window.addEventListener('blur', releaseAltIfNeeded, true);
@@ -214,7 +217,7 @@ if (!window.__fastNavInitialized) {
   function getHostname(url) {
     try {
       return new URL(url).hostname;
-    } catch (_) {
+    } catch {
       return url || '';
     }
   }

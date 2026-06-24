@@ -1,0 +1,10 @@
+{
+  "env": {
+    "browser": true,
+    "es2022": true,
+    "webextensions": true
+  },
+  "globals": {
+    "chrome": "readonly"
+  }
+}

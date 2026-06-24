@@ -1,0 +1,21 @@
+{
+  "name": "chrome-fast-nav",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Arc-style MRU tab switching and navbar toggle for Chrome",
+  "scripts": {
+    "lint": "oxlint background.js content.js --deny-warnings",
+    "lint:fix": "oxlint background.js content.js --fix",
+    "format": "oxfmt background.js content.js manifest.json package.json tsconfig.json .oxlintrc.json .oxfmtrc.json --write",
+    "format:check": "oxfmt background.js content.js manifest.json package.json tsconfig.json .oxlintrc.json .oxfmtrc.json --check",
+    "typecheck": "tsc --noEmit",
+    "check": "pnpm run lint && pnpm run format:check && pnpm run typecheck"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.2.0",
+    "oxfmt": "^0.56.0",
+    "oxlint": "^1.71.0",
+    "typescript": "^6.0.3"
+  },
+  "packageManager": "pnpm@11.9.0"
+}

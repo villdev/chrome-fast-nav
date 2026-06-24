@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "lib": ["ES2022", "DOM"],
+    "moduleDetection": "force",
+    "noEmit": true,
+    "noImplicitAny": false,
+    "skipLibCheck": true,
+    "strict": false,
+    "target": "ES2022",
+    "types": ["chrome"]
+  },
+  "include": ["background.js", "content.js"]
+}
