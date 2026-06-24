@@ -6,7 +6,6 @@ if (!fastNavWindow.__fastNavInitialized) {
 
   let overlay = null;
   let overlayHost = null;
-  let overlayRoot = null;
   let listEl = null;
   let selectedIndex = 0;
   let activeSessionId = null;
@@ -250,7 +249,7 @@ if (!fastNavWindow.__fastNavInitialized) {
     overlayHost.style.zIndex = '2147483647';
     overlayHost.style.pointerEvents = 'none';
 
-    overlayRoot = overlayHost.attachShadow({ mode: 'open' });
+    const overlayRoot = overlayHost.attachShadow({ mode: 'open' });
 
     const style = document.createElement('style');
     style.textContent = overlayStyles;
@@ -348,7 +347,6 @@ if (!fastNavWindow.__fastNavInitialized) {
     overlayHost?.remove();
     overlay = null;
     overlayHost = null;
-    overlayRoot = null;
     listEl = null;
     selectedIndex = 0;
     activeSessionId = null;

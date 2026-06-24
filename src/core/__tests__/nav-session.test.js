@@ -72,7 +72,6 @@ describe('didModifierReleaseRace', () => {
 
 describe('getSessionTabRemovalUpdate', () => {
   const baseSession = {
-    originTabId: 10,
     overlayTabId: 10,
     orderedTabIds: [10, 20, 30],
     selectedIndex: 2,
@@ -83,11 +82,10 @@ describe('getSessionTabRemovalUpdate', () => {
       action: 'showOverlay',
       orderedTabIds: [10, 30],
       selectedIndex: 1,
-      originTabId: 10,
     });
   });
 
-  it('updates the origin tab when the origin is removed', () => {
+  it('keeps the session visible when a non-overlay tab disappears', () => {
     const session = {
       ...baseSession,
       overlayTabId: 30,
@@ -98,7 +96,6 @@ describe('getSessionTabRemovalUpdate', () => {
       action: 'showOverlay',
       orderedTabIds: [20, 30],
       selectedIndex: 1,
-      originTabId: 20,
     });
   });
 
@@ -114,7 +111,6 @@ describe('getSessionTabRemovalUpdate', () => {
       action: 'cancel',
       orderedTabIds: [10, 30, 40],
       selectedIndex: 2,
-      originTabId: 10,
     });
   });
 
@@ -129,7 +125,6 @@ describe('getSessionTabRemovalUpdate', () => {
       action: 'commit',
       orderedTabIds: [10],
       selectedIndex: 0,
-      originTabId: 10,
     });
   });
 });

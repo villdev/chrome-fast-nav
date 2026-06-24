@@ -16,14 +16,12 @@ export function didModifierReleaseRace(modifierState, commandStartedAt, pressId,
 export function getSessionTabRemovalUpdate(session, removedTabId) {
   const orderedTabIds = session.orderedTabIds.filter((id) => id !== removedTabId);
   const selectedIndex = Math.min(session.selectedIndex, Math.max(orderedTabIds.length - 1, 0));
-  const originTabId = session.originTabId === removedTabId ? orderedTabIds[0] : session.originTabId;
 
   if (orderedTabIds.length <= 1) {
     return {
       action: 'commit',
       orderedTabIds,
       selectedIndex,
-      originTabId,
     };
   }
 
@@ -32,7 +30,6 @@ export function getSessionTabRemovalUpdate(session, removedTabId) {
       action: 'cancel',
       orderedTabIds,
       selectedIndex,
-      originTabId,
     };
   }
 
@@ -40,6 +37,5 @@ export function getSessionTabRemovalUpdate(session, removedTabId) {
     action: 'showOverlay',
     orderedTabIds,
     selectedIndex,
-    originTabId,
   };
 }

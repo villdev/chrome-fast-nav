@@ -21,7 +21,6 @@ let suppressMruUpdate = false;
 let navSession = null;
 let nextSessionId = 1;
 const modifierState = {
-  alt: false,
   pressId: 0,
   lastDownAt: 0,
   lastUpAt: 0,
@@ -122,13 +121,13 @@ async function getWindowState(windowId) {
   const activeTab = getActiveTab(tabs);
 
   if (!activeTab) {
-    return { tabs, activeTab: null, orderedTabIds: [] };
+    return { activeTab: null, orderedTabIds: [] };
   }
 
   const mru = await getMru();
   const orderedTabIds = buildOrderedTabIds(tabs, mru);
 
-  return { tabs, activeTab, orderedTabIds };
+  return { activeTab, orderedTabIds };
 }
 
 async function showOverlay(session = navSession) {
@@ -180,19 +179,17 @@ async function endNavSession(session = navSession) {
   return endedActiveSession;
 }
 
-async function activateSelectedTab() {
+async function refreshOverlayWithCommitFallback() {
   const session = navSession;
-  if (!session) return null;
+  if (!session) return;
 
   scheduleCommitTimer(session);
   const overlayShown = await showOverlay(session);
 
-  if (navSession !== session) return null;
+  if (navSession !== session) return;
   if (overlayShown) {
     clearCommitTimer(session);
   }
-
-  return session.orderedTabIds[session.selectedIndex] ?? null;
 }
 
 function didModifierReleaseRace(commandStartedAt, pressId) {
@@ -214,12 +211,10 @@ async function startNavSession(windowId, direction, commandStartedAt) {
   navSession = {
     id: nextSessionId,
     windowId,
-    originTabId: activeTab.id,
     orderedTabIds,
     selectedIndex: 0,
     overlayTabId: activeTab.id,
     commitTimer: null,
-    pressId,
     isFinalizing: false,
   };
   nextSessionId += 1;
@@ -229,7 +224,7 @@ async function startNavSession(windowId, direction, commandStartedAt) {
 
   try {
     moveSelection(direction);
-    await activateSelectedTab();
+    await refreshOverlayWithCommitFallback();
 
     if (navSession === session && didModifierReleaseRace(commandStartedAt, pressId)) {
       await commitNav();
@@ -277,7 +272,7 @@ async function handleMruNav(direction, commandTab) {
   }
 
   moveSelection(direction);
-  await activateSelectedTab();
+  await refreshOverlayWithCommitFallback();
 }
 
 async function commitNav() {
@@ -344,7 +339,6 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 
   const update = getSessionTabRemovalUpdate(session, tabId);
   session.orderedTabIds = update.orderedTabIds;
-  session.originTabId = update.originTabId;
   session.selectedIndex = update.selectedIndex;
 
   if (update.action === 'commit') {
@@ -411,10 +405,8 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
     const timestamp = Date.now();
     if (msg.isDown) {
       modifierState.pressId += 1;
-      modifierState.alt = true;
       modifierState.lastDownAt = timestamp;
     } else {
-      modifierState.alt = false;
       modifierState.lastUpAt = timestamp;
       modifierState.lastUpPressId = modifierState.pressId;
 
@@ -428,7 +420,7 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
     }
 
     moveSelection(msg.direction);
-    activateSelectedTab().catch(() => {});
+    refreshOverlayWithCommitFallback().catch(() => {});
   } else if (msg.action === 'switchToTab' && typeof msg.tabId === 'number') {
     if (!doesMessageMatchSession(msg)) {
       return false;
