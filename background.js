@@ -318,15 +318,7 @@ function moveSelection(direction) {
   if (len < 2) return;
 
   const delta = direction < 0 ? -1 : 1;
-  let nextIndex = navSession.selectedIndex + delta;
-
-  if (nextIndex <= 0) {
-    nextIndex = len - 1;
-  } else if (nextIndex >= len) {
-    nextIndex = 1;
-  }
-
-  navSession.selectedIndex = nextIndex;
+  navSession.selectedIndex = (navSession.selectedIndex + delta + len) % len;
 }
 
 async function handleMruNav(direction, commandTab) {
@@ -453,8 +445,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
     session.originTabId = session.orderedTabIds[0];
   }
 
-  const nextIndex = Math.min(session.selectedIndex, session.orderedTabIds.length - 1);
-  session.selectedIndex = Math.max(1, nextIndex);
+  session.selectedIndex = Math.min(session.selectedIndex, session.orderedTabIds.length - 1);
 
   if (session.overlayTabId === tabId) {
     await cancelNav();
