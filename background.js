@@ -136,7 +136,8 @@ async function getWindowState(windowId) {
     seen.add(tabId);
   }
 
-  for (const tab of tabs) {
+  for (let i = tabs.length - 1; i >= 0; i -= 1) {
+    const tab = tabs[i];
     if (!seen.has(tab.id)) {
       orderedTabIds.push(tab.id);
       seen.add(tab.id);
@@ -400,7 +401,8 @@ async function seedMru() {
   const merged = [...current];
   const seen = new Set(current);
 
-  for (const tab of tabs) {
+  for (let i = tabs.length - 1; i >= 0; i -= 1) {
+    const tab = tabs[i];
     if (!seen.has(tab.id)) {
       merged.push(tab.id);
       seen.add(tab.id);
