@@ -83,6 +83,5 @@ chrome-fast-nav/
 ├── manifest.json
 ├── background.js
 ├── content.js
-├── content.css
 └── icons/
 ```

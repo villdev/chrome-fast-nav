@@ -50,15 +50,6 @@ async function safeSendMessage(tabId, message) {
 
 async function ensureOverlayInjected(tabId) {
   try {
-    await chrome.scripting.insertCSS({
-      target: { tabId },
-      files: ['content.css'],
-    });
-  } catch (_) {
-    // Ignore; CSS may already be present or page may be restricted.
-  }
-
-  try {
     await chrome.scripting.executeScript({
       target: { tabId },
       files: ['content.js'],
@@ -259,6 +250,28 @@ async function closeOverlay(session = navSession) {
   });
 }
 
+async function endNavSession(session = navSession) {
+  if (!session) return false;
+
+  let endedActiveSession = false;
+  session.isFinalizing = true;
+  clearCommitTimer(session);
+
+  try {
+    await closeOverlay(session);
+  } catch (_) {
+    // Overlay teardown is best-effort; session state must still be restored.
+  } finally {
+    endedActiveSession = navSession === session;
+    if (endedActiveSession) {
+      navSession = null;
+      suppressMruUpdate = false;
+    }
+  }
+
+  return endedActiveSession;
+}
+
 async function activateSelectedTab() {
   const session = navSession;
   if (!session) return null;
@@ -304,11 +317,19 @@ async function startNavSession(windowId, direction, commandStartedAt) {
 
   const session = navSession;
   suppressMruUpdate = true;
-  moveSelection(direction);
-  await activateSelectedTab();
 
-  if (navSession === session && didModifierReleaseRace(commandStartedAt, pressId)) {
-    await commitNav();
+  try {
+    moveSelection(direction);
+    await activateSelectedTab();
+
+    if (navSession === session && didModifierReleaseRace(commandStartedAt, pressId)) {
+      await commitNav();
+    }
+  } catch (error) {
+    if (navSession === session) {
+      await endNavSession(session);
+    }
+    throw error;
   }
 }
 
@@ -340,13 +361,7 @@ async function handleMruNav(direction, commandTab) {
 
   if (!shouldContinueSession) {
     if (navSession) {
-      const previousSession = navSession;
-      clearCommitTimer(previousSession);
-      await closeOverlay(previousSession);
-      if (navSession === previousSession) {
-        navSession = null;
-        suppressMruUpdate = false;
-      }
+      await endNavSession(navSession);
     }
     await startNavSession(windowId, direction, commandStartedAt);
     return;
@@ -361,13 +376,8 @@ async function commitNav() {
   if (!session) return;
 
   const finalTabId = session.orderedTabIds[session.selectedIndex];
-  session.isFinalizing = true;
-  clearCommitTimer(session);
-  await closeOverlay(session);
-
-  if (navSession !== session) return;
-  navSession = null;
-  suppressMruUpdate = false;
+  const endedActiveSession = await endNavSession(session);
+  if (!endedActiveSession) return;
 
   if (typeof finalTabId === 'number') {
     await chrome.tabs.update(finalTabId, { active: true }).catch(() => {});
@@ -379,13 +389,7 @@ async function cancelNav() {
   const session = navSession;
   if (!session) return;
 
-  session.isFinalizing = true;
-  clearCommitTimer(session);
-  await closeOverlay(session);
-
-  if (navSession !== session) return;
-  navSession = null;
-  suppressMruUpdate = false;
+  await endNavSession(session);
 }
 
 async function handleNavbarToggle(commandTab) {
