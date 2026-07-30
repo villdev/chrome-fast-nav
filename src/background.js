@@ -22,6 +22,8 @@ let suppressMruUpdate = false;
 let navSession = null;
 let nextSessionId = 1;
 let historyMutationQueue = Promise.resolve();
+let mruCache = null;
+let mruLoadPromise = null;
 const createdTabBatches = new Map();
 const modifierState = {
   pressId: 0,
@@ -37,12 +39,27 @@ function enqueueHistoryMutation(mutation) {
 }
 
 async function getMru() {
-  const data = await chrome.storage.session.get(MRU_KEY);
-  return Array.isArray(data[MRU_KEY]) ? data[MRU_KEY] : [];
+  if (mruCache) return mruCache;
+
+  if (!mruLoadPromise) {
+    mruLoadPromise = chrome.storage.session
+      .get(MRU_KEY)
+      .then((data) => {
+        mruCache = Array.isArray(data[MRU_KEY]) ? data[MRU_KEY].slice(0, MAX_MRU_SIZE) : [];
+        return mruCache;
+      })
+      .finally(() => {
+        mruLoadPromise = null;
+      });
+  }
+
+  return mruLoadPromise;
 }
 
 async function setMru(stack) {
-  await chrome.storage.session.set({ [MRU_KEY]: stack.slice(0, MAX_MRU_SIZE) });
+  const nextStack = stack.slice(0, MAX_MRU_SIZE);
+  await chrome.storage.session.set({ [MRU_KEY]: nextStack });
+  mruCache = nextStack;
 }
 
 async function mutateMru(mutation) {
@@ -190,36 +207,52 @@ async function getFocusedWindowId() {
 
 async function getWindowState(windowId) {
   await historyMutationQueue;
-  const tabs = await chrome.tabs.query({ windowId });
+  const [tabs, mru] = await Promise.all([chrome.tabs.query({ windowId }), getMru()]);
   const activeTab = getActiveTab(tabs);
 
   if (!activeTab) {
-    return { activeTab: null, orderedTabIds: [] };
+    return { activeTab: null, orderedTabIds: [], overlayTabs: [] };
   }
 
-  const mru = await getMru();
   const orderedTabIds = buildOrderedTabIds(tabs, mru);
-
-  return { activeTab, orderedTabIds };
-}
-
-async function showOverlay(session = navSession) {
-  if (!session || navSession !== session) return;
-
-  const { orderedTabIds, overlayTabId } = session;
-  const tabs = await chrome.tabs.query({ windowId: session.windowId });
-  if (navSession !== session) return;
-
   const tabMap = new Map(tabs.map((tab) => [tab.id, tab]));
   const overlayTabs = buildOverlayTabs(orderedTabIds, tabMap);
-  const selectedIndex = Math.min(session.selectedIndex, Math.max(overlayTabs.length - 1, 0));
 
-  return sendMessageWithRetry(overlayTabId, {
+  return { activeTab, orderedTabIds, overlayTabs };
+}
+
+async function showOverlay(session = navSession, forceFullRender = false) {
+  if (!session || navSession !== session) return;
+
+  const { overlayTabId } = session;
+  const selectedIndex = Math.min(
+    session.selectedIndex,
+    Math.max(session.overlayTabs.length - 1, 0),
+  );
+
+  if (session.overlayInitialized && !forceFullRender) {
+    const selectionUpdated = await safeSendMessage(overlayTabId, {
+      action: 'updateSwitcherSelection',
+      sessionId: session.id,
+      selectedIndex,
+    });
+
+    if (selectionUpdated) return true;
+    session.overlayInitialized = false;
+  }
+
+  const overlayShown = await sendMessageWithRetry(overlayTabId, {
     action: 'showSwitcher',
     sessionId: session.id,
-    tabs: overlayTabs,
+    tabs: session.overlayTabs,
     selectedIndex,
   });
+
+  if (navSession === session && overlayShown) {
+    session.overlayInitialized = true;
+  }
+
+  return overlayShown;
 }
 
 async function closeOverlay(session = navSession) {
@@ -275,7 +308,7 @@ function didModifierReleaseRace(commandStartedAt, pressId) {
 }
 
 async function startNavSession(windowId, direction, commandStartedAt) {
-  const { activeTab, orderedTabIds } = await getWindowState(windowId);
+  const { activeTab, orderedTabIds, overlayTabs } = await getWindowState(windowId);
 
   if (typeof activeTab?.id !== 'number' || orderedTabIds.length < 2) return;
 
@@ -285,8 +318,10 @@ async function startNavSession(windowId, direction, commandStartedAt) {
     id: nextSessionId,
     windowId,
     orderedTabIds,
+    overlayTabs,
     selectedIndex: 0,
     overlayTabId: activeTab.id,
+    overlayInitialized: false,
     commitTimer: null,
     isFinalizing: false,
   };
@@ -413,6 +448,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 
   const update = getSessionTabRemovalUpdate(session, tabId);
   session.orderedTabIds = update.orderedTabIds;
+  session.overlayTabs = session.overlayTabs.filter((tab) => tab.id !== tabId);
   session.selectedIndex = update.selectedIndex;
 
   if (update.action === 'commit') {
@@ -425,7 +461,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
     return;
   }
 
-  await showOverlay(session);
+  await showOverlay(session, true);
 });
 
 chrome.runtime.onInstalled.addListener(() => {

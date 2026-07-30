@@ -10,6 +10,7 @@ if (!fastNavWindow.__fastNavInitialized) {
   let selectedIndex = 0;
   let activeSessionId = null;
   let renderedTabIds = [];
+  let renderedItems = [];
   let altIsDown = false;
 
   const overlayStyles = `
@@ -318,6 +319,7 @@ if (!fastNavWindow.__fastNavInitialized) {
           .catch(() => {});
       });
 
+      renderedItems.push(item);
       listEl.appendChild(item);
     });
 
@@ -351,19 +353,20 @@ if (!fastNavWindow.__fastNavInitialized) {
     selectedIndex = 0;
     activeSessionId = null;
     renderedTabIds = [];
+    renderedItems = [];
   }
 
   function syncSelection(nextSelectedIndex) {
     if (!listEl) return;
 
-    const items = listEl.querySelectorAll('.fast-nav-item');
-    const safeSelectedIndex = normalizeSelectedIndex(nextSelectedIndex, items.length);
-    items.forEach((item, index) => {
-      item.classList.toggle('fast-nav-selected', index === safeSelectedIndex);
-    });
+    const safeSelectedIndex = normalizeSelectedIndex(nextSelectedIndex, renderedItems.length);
+    if (safeSelectedIndex !== selectedIndex) {
+      renderedItems[selectedIndex]?.classList.remove('fast-nav-selected');
+      renderedItems[safeSelectedIndex]?.classList.add('fast-nav-selected');
+    }
 
     selectedIndex = safeSelectedIndex;
-    items[selectedIndex]?.scrollIntoView({ block: 'nearest' });
+    renderedItems[selectedIndex]?.scrollIntoView({ block: 'nearest' });
   }
 
   function onKeyDown(event) {
@@ -411,6 +414,12 @@ if (!fastNavWindow.__fastNavInitialized) {
       } else {
         syncSelection(nextSelectedIndex);
       }
+    } else if (
+      msg.action === 'updateSwitcherSelection' &&
+      overlay &&
+      activeSessionId === getMessageSessionId(msg)
+    ) {
+      syncSelection(msg.selectedIndex);
     } else if (msg.action === 'closeSwitcher') {
       destroyOverlay(getMessageSessionId(msg));
     }
