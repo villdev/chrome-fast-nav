@@ -1,4 +1,5 @@
 import {
+  insertTabIdAfter,
   MAX_MRU_SIZE,
   pushTabIdToMru,
   removeTabIdFromMru,
@@ -20,12 +21,20 @@ const SHOW_OVERLAY_MAX_ATTEMPTS = 6;
 let suppressMruUpdate = false;
 let navSession = null;
 let nextSessionId = 1;
+let historyMutationQueue = Promise.resolve();
+const createdTabBatches = new Map();
 const modifierState = {
   pressId: 0,
   lastDownAt: 0,
   lastUpAt: 0,
   lastUpPressId: null,
 };
+
+function enqueueHistoryMutation(mutation) {
+  const result = historyMutationQueue.then(mutation);
+  historyMutationQueue = result.catch(() => {});
+  return result;
+}
 
 async function getMru() {
   const data = await chrome.storage.session.get(MRU_KEY);
@@ -36,11 +45,74 @@ async function setMru(stack) {
   await chrome.storage.session.set({ [MRU_KEY]: stack.slice(0, MAX_MRU_SIZE) });
 }
 
+async function mutateMru(mutation) {
+  await enqueueHistoryMutation(async () => {
+    const stack = await getMru();
+    await setMru(await mutation(stack));
+  });
+}
+
 async function pushMru(tabId) {
   if (suppressMruUpdate || typeof tabId !== 'number') return;
 
-  const stack = await getMru();
-  await setMru(pushTabIdToMru(stack, tabId));
+  await mutateMru((stack) => pushTabIdToMru(stack, tabId));
+}
+
+function removeTabFromCreationBatches(tabId) {
+  for (const [windowId, batch] of createdTabBatches) {
+    if (batch.openerTabId === tabId) {
+      createdTabBatches.delete(windowId);
+      continue;
+    }
+
+    batch.tabIds = batch.tabIds.filter((id) => id !== tabId);
+    if (batch.tabIds.length === 0) {
+      createdTabBatches.delete(windowId);
+    }
+  }
+}
+
+async function insertCreatedTab(tab) {
+  if (typeof tab.id !== 'number') return;
+
+  if (tab.active) {
+    createdTabBatches.delete(tab.windowId);
+    await pushMru(tab.id);
+    return;
+  }
+
+  await mutateMru(async (stack) => {
+    let openerTabId = tab.openerTabId;
+
+    if (typeof openerTabId !== 'number' && typeof tab.windowId === 'number') {
+      const [activeTab] = await chrome.tabs.query({
+        active: true,
+        windowId: tab.windowId,
+      });
+      openerTabId = activeTab?.id;
+    }
+
+    if (typeof openerTabId !== 'number') {
+      return pushTabIdToMru(stack, tab.id);
+    }
+
+    let batch = createdTabBatches.get(tab.windowId);
+    if (!batch || batch.openerTabId !== openerTabId) {
+      batch = { openerTabId, tabIds: [] };
+    }
+
+    const anchorTabId = batch.tabIds.at(-1) ?? openerTabId;
+    batch.tabIds.push(tab.id);
+    batch.tabIds = batch.tabIds.slice(-MAX_MRU_SIZE);
+    createdTabBatches.set(tab.windowId, batch);
+
+    return insertTabIdAfter(stack, tab.id, anchorTabId);
+  });
+}
+
+async function removeTabFromHistory(tabId) {
+  removeTabFromCreationBatches(tabId);
+  await mutateMru((stack) => removeTabIdFromMru(stack, tabId));
 }
 
 function sleep(ms) {
@@ -117,6 +189,7 @@ async function getFocusedWindowId() {
 }
 
 async function getWindowState(windowId) {
+  await historyMutationQueue;
   const tabs = await chrome.tabs.query({ windowId });
   const activeTab = getActiveTab(tabs);
 
@@ -304,9 +377,10 @@ async function handleNavbarToggle(commandTab) {
 }
 
 async function seedMru() {
-  const tabs = await chrome.tabs.query({});
-  const current = await getMru();
-  await setMru(seedMruStack(current, tabs));
+  await mutateMru(async (stack) => {
+    const tabs = await chrome.tabs.query({});
+    return seedMruStack(stack, tabs);
+  });
 }
 
 async function warmContentScripts() {
@@ -320,17 +394,17 @@ async function warmContentScripts() {
   );
 }
 
-chrome.tabs.onActivated.addListener(({ tabId }) => {
+chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
+  createdTabBatches.delete(windowId);
   pushMru(tabId).catch(() => {});
 });
 
-chrome.tabs.onCreated.addListener(({ id }) => {
-  pushMru(id).catch(() => {});
+chrome.tabs.onCreated.addListener((tab) => {
+  insertCreatedTab(tab).catch(() => {});
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
-  const stack = await getMru();
-  await setMru(removeTabIdFromMru(stack, tabId));
+  await removeTabFromHistory(tabId);
 
   if (!navSession) return;
 

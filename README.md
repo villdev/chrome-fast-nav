@@ -27,7 +27,21 @@ This is the only browser UI toggle exposed to extensions. Chrome extensions cann
 
 ## How It Works
 
-Fast Nav keeps an MRU stack of tab ids. Every time a tab becomes active or a new tab is created, it moves to the front of that stack.
+Fast Nav keeps an MRU stack of tab ids. Every time a tab becomes active, it moves to the
+front of that stack. Background tabs opened together from the current page are inserted
+after it in creation order, then follow normal MRU behavior once visited.
+
+For example, opening links `A`, `B`, and `C` in the background produces:
+
+```text
+Current -> A -> B -> C -> older tabs
+```
+
+After visiting `A`, the order becomes:
+
+```text
+A -> previous current -> B -> C -> older tabs
+```
 
 Example:
 

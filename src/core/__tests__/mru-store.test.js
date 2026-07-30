@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { MAX_MRU_SIZE, pushTabIdToMru, removeTabIdFromMru, seedMruStack } from '../mru-store.js';
+import {
+  insertTabIdAfter,
+  MAX_MRU_SIZE,
+  pushTabIdToMru,
+  removeTabIdFromMru,
+  seedMruStack,
+} from '../mru-store.js';
 
 describe('pushTabIdToMru', () => {
   it('adds a new tab id to the front', () => {
@@ -17,6 +23,29 @@ describe('pushTabIdToMru', () => {
 
   it('leaves non-number tab ids out of the update path', () => {
     expect(pushTabIdToMru([3, 2, 1], '4', 2)).toEqual([3, 2]);
+  });
+});
+
+describe('background-created tab ordering', () => {
+  it('preserves creation order after the opener, then restores MRU behavior on activation', () => {
+    let stack = [1, 9];
+    let anchorTabId = 1;
+
+    for (const tabId of [2, 3, 4]) {
+      stack = insertTabIdAfter(stack, tabId, anchorTabId);
+      anchorTabId = tabId;
+    }
+
+    expect(stack).toEqual([1, 2, 3, 4, 9]);
+    expect(pushTabIdToMru(stack, 2)).toEqual([2, 1, 3, 4, 9]);
+  });
+
+  it('keeps the created tab when its insertion anchor is at the MRU limit', () => {
+    const stack = Array.from({ length: MAX_MRU_SIZE }, (_, index) => index + 1);
+    const nextStack = insertTabIdAfter(stack, 999, MAX_MRU_SIZE);
+
+    expect(nextStack).toHaveLength(MAX_MRU_SIZE);
+    expect(nextStack[0]).toBe(999);
   });
 });
 
